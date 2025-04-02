@@ -220,6 +220,10 @@ class FilingSearchApp:
 
 def main():
     root = tk.Tk()
+    root.lift()
+    root.focus_force()
+    root.after(100, lambda: root.attributes('-topmost', 1))
+    root.after(500, lambda: root.attributes('-topmost', 0))
     app = FilingSearchApp(root)
     root.mainloop()
 
