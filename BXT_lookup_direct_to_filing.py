@@ -1,0 +1,227 @@
+import requests
+import tkinter as tk
+import webbrowser
+import threading
+import logging
+from bs4 import BeautifulSoup
+
+# Configure logging.
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Correct issuer-specific CIKs.
+NYL_INVESTMENTS_ETF_CIK = "0001415995"           # New York Life Investments ETF Trust
+NYL_INVESTMENTS_ACTIVE_ETF_CIK = "0001426439"      # New York Life Investments Active ETF Trust
+
+# Updated User-Agent string.
+SEC_HEADERS = {"User-Agent": "Matthew Curtin (mvcurtin@examplegmail.com)"}
+
+def get_native_filing_url(cik, accession_stripped, accession_original):
+    """
+    Retrieves the filing's index page, then parses it to locate the native .htm file.
+    Returns the URL for the first .htm or .html file that meets the criteria.
+    If none is found, it falls back to the index page URL.
+    """
+    base_url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{accession_stripped}/"
+    index_url = base_url + "index.html"
+    try:
+        response = requests.get(index_url, headers=SEC_HEADERS, timeout=10)
+        response.raise_for_status()
+    except requests.RequestException as e:
+        logging.error(f"Error fetching index page: {e}")
+        return index_url  # Fallback to index page.
+    
+    soup = BeautifulSoup(response.text, "html.parser")
+    links = soup.find_all("a", href=True)
+    
+    for link in links:
+        href = link["href"]
+        lower_href = href.lower()
+        # Accept only file names (i.e. no '/') ending with .htm or .html.
+        if (lower_href.endswith(".htm") or lower_href.endswith(".html")) and "/" not in href:
+            # Skip index files.
+            if "index.html" in lower_href or "index.htm" in lower_href:
+                continue
+            # Skip files that include the accession number.
+            if accession_stripped in href or accession_original in href:
+                continue
+            native_url = base_url + href
+            return native_url
+    
+    # If no native filing is found, return the index page URL.
+    return index_url
+
+def get_filings(cik, filing_type):
+    """
+    Fetches filings of a specified type for the given CIK.
+    Returns a list of tuples: (filing_date, filing_url).
+    """
+    cik = cik.zfill(10)
+    base_url = f"https://data.sec.gov/submissions/CIK{cik}.json"
+    logging.info(f"Fetching filings for CIK: {cik}...")
+    try:
+        response = requests.get(base_url, headers=SEC_HEADERS, timeout=10)
+        response.raise_for_status()
+    except requests.RequestException as e:
+        logging.error(f"Error fetching data: {e}")
+        return []
+    
+    try:
+        data = response.json()
+    except ValueError as e:
+        logging.error(f"Error parsing JSON: {e}")
+        return []
+    
+    filings = data.get("filings", {}).get("recent", {})
+    results = []
+    forms = filings.get("form", [])
+    accession_numbers = filings.get("accessionNumber", [])
+    filing_dates = filings.get("filingDate", [])
+    
+    for i, form in enumerate(forms):
+        if form == filing_type:
+            accession_original = accession_numbers[i]
+            accession_stripped = accession_original.replace("-", "")
+            filing_url = get_native_filing_url(cik, accession_stripped, accession_original)
+            filing_date = filing_dates[i]
+            results.append((filing_date, filing_url))
+    
+    logging.info(f"Found {len(results)} {filing_type} filings.")
+    return results
+
+def open_link(url):
+    """Opens the given URL in the default web browser."""
+    webbrowser.open_new_tab(url)
+
+class FilingSearchApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Filing Search")
+        
+        # Create a control panel frame.
+        self.control_frame = tk.Frame(root)
+        self.control_frame.pack(pady=10, padx=10)
+        
+        # Instruction statement.
+        tk.Label(self.control_frame, 
+                 text="Locate filings for an issuer by selecting filing type(s) and entering a CIK number."
+                ).pack(pady=5)
+        
+        # Filing type selection.
+        tk.Label(self.control_frame, text="Select Filing Type(s):").pack(pady=5)
+        self.var_485BXT = tk.BooleanVar(value=False)
+        self.var_485APOS = tk.BooleanVar(value=False)
+        self.var_485BPOS = tk.BooleanVar(value=False)
+        self.var_497 = tk.BooleanVar(value=False)
+        self.var_497k = tk.BooleanVar(value=False)
+        tk.Checkbutton(self.control_frame, text="485BXT", variable=self.var_485BXT).pack(anchor="w", padx=10)
+        tk.Checkbutton(self.control_frame, text="485APOS", variable=self.var_485APOS).pack(anchor="w", padx=10)
+        tk.Checkbutton(self.control_frame, text="485BPOS", variable=self.var_485BPOS).pack(anchor="w", padx=10)
+        tk.Checkbutton(self.control_frame, text="497", variable=self.var_497).pack(anchor="w", padx=10)
+        tk.Checkbutton(self.control_frame, text="497k", variable=self.var_497k).pack(anchor="w", padx=10)
+        
+        # Issuer selection.
+        tk.Label(self.control_frame, text="Select Issuer:").pack(pady=5)
+        tk.Button(self.control_frame, text="New York Life Investments ETF Trust",
+                  command=lambda: self.search_filings_by_cik(NYL_INVESTMENTS_ETF_CIK)
+                 ).pack(fill="x", pady=5)
+        tk.Button(self.control_frame, text="New York Life Investments Active ETF Trust",
+                  command=lambda: self.search_filings_by_cik(NYL_INVESTMENTS_ACTIVE_ETF_CIK)
+                 ).pack(fill="x", pady=5)
+        
+        # Manual CIK entry.
+        tk.Label(self.control_frame, text="Or enter a CIK manually:").pack(pady=5)
+        self.cik_entry = tk.Entry(self.control_frame, width=20)
+        self.cik_entry.pack(pady=5)
+        
+        # Search button.
+        tk.Button(self.control_frame, text="Search", command=self.start_search_filings).pack(pady=5)
+        
+        # Set up a container for the scrollable results area.
+        self.container = tk.Frame(root)
+        self.container.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        self.canvas = tk.Canvas(self.container, height=300)
+        self.canvas.pack(side="left", fill="both", expand=True)
+        
+        self.scrollbar = tk.Scrollbar(self.container, orient="vertical", command=self.canvas.yview)
+        self.scrollbar.pack(side="right", fill="y")
+        
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.canvas.bind('<Configure>', lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        
+        self.results_frame = tk.Frame(self.canvas)
+        self.canvas.create_window((0, 0), window=self.results_frame, anchor="nw")
+    
+    def search_filings_by_cik(self, cik):
+        """Helper to set the CIK entry and initiate the search."""
+        self.cik_entry.delete(0, tk.END)
+        self.cik_entry.insert(0, cik)
+        self.start_search_filings()
+    
+    def start_search_filings(self):
+        """Starts the filing search in a separate thread and displays a loading message."""
+        # Clear previous results.
+        for widget in self.results_frame.winfo_children():
+            widget.destroy()
+        # Display a loading message.
+        self.loading_label = tk.Label(self.results_frame, text="Loading...", fg="green")
+        self.loading_label.pack(padx=10, pady=10)
+        # Run the search in a new thread.
+        threading.Thread(target=self.search_filings, daemon=True).start()
+    
+    def search_filings(self):
+        """Fetches filings for the selected types and updates the UI."""
+        cik = self.cik_entry.get().strip()
+        selected_types = []
+        if self.var_485BXT.get():
+            selected_types.append("485BXT")
+        if self.var_485APOS.get():
+            selected_types.append("485APOS")
+        if self.var_485BPOS.get():
+            selected_types.append("485BPOS")
+        if self.var_497.get():
+            selected_types.append("497")
+        if self.var_497k.get():
+            selected_types.append("497k")
+        
+        if not selected_types:
+            self.root.after(0, self.update_results, "Please select at least one filing type.", True)
+            return
+        
+        results = {}
+        for filing_type in selected_types:
+            filings = get_filings(cik, filing_type)
+            results[filing_type] = filings
+        # Schedule the display of results on the main thread.
+        self.root.after(0, self.display_results, results)
+    
+    def update_results(self, message, error=False):
+        """Clears previous results and displays a message."""
+        for widget in self.results_frame.winfo_children():
+            widget.destroy()
+        label_color = "red" if error else "black"
+        tk.Label(self.results_frame, text=message, fg=label_color).pack(padx=10, pady=10)
+    
+    def display_results(self, results):
+        """Displays the filings results in the results frame."""
+        for widget in self.results_frame.winfo_children():
+            widget.destroy()
+        for filing_type, filings in results.items():
+            header = tk.Label(self.results_frame, text=f"{filing_type} Filings:", font=("Helvetica", 10, "bold"))
+            header.pack(anchor="w", padx=10, pady=(10, 0))
+            if filings:
+                for date, url in filings:
+                    btn_text = f"{date}: {url}"
+                    btn = tk.Button(self.results_frame, text=btn_text, fg="blue", cursor="hand2",
+                                    command=lambda url=url: open_link(url))
+                    btn.pack(anchor="w", padx=20, pady=2)
+            else:
+                tk.Label(self.results_frame, text=f"No {filing_type} filings found.").pack(padx=20, pady=5)
+
+def main():
+    root = tk.Tk()
+    app = FilingSearchApp(root)
+    root.mainloop()
+
+if __name__ == '__main__':
+    main()
