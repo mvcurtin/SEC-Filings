@@ -48,8 +48,9 @@ def sec_get(url, **kwargs):
 
 def get_native_filing_url(cik, accession_stripped, accession_original):
     """
-    Retrieves the filing's index page, then parses it to locate the native .htm file.
-    Returns the URL for the last candidate file (preferably one that is not 'index.html').
+    Retrieves the filing's index page, then parses it to locate the native filing.
+    Filters out any file that ends with "headers.html", "index.html", or ".txt".
+    Returns the URL for the remaining file (if any) as the native filing.
     If none is found, it falls back to the index page URL.
     """
     base_url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{accession_stripped}/"
@@ -68,21 +69,18 @@ def get_native_filing_url(cik, accession_stripped, accession_original):
     for link in links:
         href = link["href"].strip()
         lower_href = href.lower()
-        # Accept only file names ending with .htm or .html and without any subdirectory.
-        if (lower_href.endswith(".htm") or lower_href.endswith(".html")) and "/" not in href:
-            # Exclude files ending with .txt.
-            if lower_href.endswith(".txt"):
-                continue
-            candidate_files.append(href)
+        # Only consider files in the base directory (ignore subdirectories).
+        if "/" in href:
+            continue
+        # Ignore files ending with "headers.html", "index.html", or any ".txt" file.
+        if lower_href.endswith("headers.html") or lower_href.endswith("index.html") or lower_href.endswith(".txt"):
+            continue
+        candidate_files.append(href)
     
-    # If there are other candidates besides "index.html", prefer the last one of those.
-    non_index_candidates = [f for f in candidate_files if f.lower() != "index.html"]
-    if non_index_candidates:
-        return base_url + non_index_candidates[-1]
-    elif candidate_files:
-        return base_url + candidate_files[-1]
-    else:
-        return index_url
+    if candidate_files:
+        # Select the remaining candidate file.
+        return base_url + candidate_files[0]
+    return index_url
 
 def get_filings(cik, filing_type):
     """
