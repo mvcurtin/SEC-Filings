@@ -3,6 +3,7 @@ import tkinter as tk
 import webbrowser
 import threading
 import logging
+import time
 from bs4 import BeautifulSoup
 
 # Configure logging.
@@ -15,16 +16,46 @@ NYL_INVESTMENTS_ACTIVE_ETF_CIK = "0001426439"      # New York Life Investments A
 # Updated User-Agent string.
 SEC_HEADERS = {"User-Agent": "Matthew Curtin (mvcurtin@examplegmail.com)"}
 
+# Rate limiting: no more than ~5 requests per second.
+_rate_limit_lock = threading.Lock()
+_last_request_time = 0
+
+def sec_get(url, **kwargs):
+    """
+    A wrapper for requests.get that enforces a delay so that
+    no more than ~5 requests per second are made, and implements a simple retry
+    with exponential backoff if a 429 response is received.
+    """
+    global _last_request_time
+    max_retries = 3
+    backoff_factor = 10  # seconds
+    for attempt in range(max_retries):
+        with _rate_limit_lock:
+            now = time.time()
+            elapsed = now - _last_request_time
+            # Enforce a 0.2 second delay between requests.
+            if elapsed < 0.2:
+                time.sleep(0.2 - elapsed)
+            _last_request_time = time.time()
+        response = requests.get(url, headers=SEC_HEADERS, **kwargs)
+        if response.status_code == 429:
+            logging.warning(f"429 Too Many Requests for {url}. Retrying (attempt {attempt+1}/{max_retries}) after backoff.")
+            time.sleep((attempt + 1) * backoff_factor)
+        else:
+            return response
+    # Return the final response even if it's still 429
+    return response
+
 def get_native_filing_url(cik, accession_stripped, accession_original):
     """
     Retrieves the filing's index page, then parses it to locate the native .htm file.
-    Returns the URL for the first .htm or .html file that meets the criteria.
+    Returns the URL for the last candidate file (preferably one that is not 'index.html').
     If none is found, it falls back to the index page URL.
     """
     base_url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{accession_stripped}/"
     index_url = base_url + "index.html"
     try:
-        response = requests.get(index_url, headers=SEC_HEADERS, timeout=10)
+        response = sec_get(index_url, timeout=10)
         response.raise_for_status()
     except requests.RequestException as e:
         logging.error(f"Error fetching index page: {e}")
@@ -33,22 +64,25 @@ def get_native_filing_url(cik, accession_stripped, accession_original):
     soup = BeautifulSoup(response.text, "html.parser")
     links = soup.find_all("a", href=True)
     
+    candidate_files = []
     for link in links:
-        href = link["href"]
+        href = link["href"].strip()
         lower_href = href.lower()
-        # Accept only file names (i.e. no '/') ending with .htm or .html.
+        # Accept only file names ending with .htm or .html and without any subdirectory.
         if (lower_href.endswith(".htm") or lower_href.endswith(".html")) and "/" not in href:
-            # Skip index files.
-            if "index.html" in lower_href or "index.htm" in lower_href:
+            # Exclude files ending with .txt.
+            if lower_href.endswith(".txt"):
                 continue
-            # Skip files that include the accession number.
-            if accession_stripped in href or accession_original in href:
-                continue
-            native_url = base_url + href
-            return native_url
+            candidate_files.append(href)
     
-    # If no native filing is found, return the index page URL.
-    return index_url
+    # If there are other candidates besides "index.html", prefer the last one of those.
+    non_index_candidates = [f for f in candidate_files if f.lower() != "index.html"]
+    if non_index_candidates:
+        return base_url + non_index_candidates[-1]
+    elif candidate_files:
+        return base_url + candidate_files[-1]
+    else:
+        return index_url
 
 def get_filings(cik, filing_type):
     """
@@ -59,7 +93,7 @@ def get_filings(cik, filing_type):
     base_url = f"https://data.sec.gov/submissions/CIK{cik}.json"
     logging.info(f"Fetching filings for CIK: {cik}...")
     try:
-        response = requests.get(base_url, headers=SEC_HEADERS, timeout=10)
+        response = sec_get(base_url, timeout=10)
         response.raise_for_status()
     except requests.RequestException as e:
         logging.error(f"Error fetching data: {e}")
@@ -160,13 +194,10 @@ class FilingSearchApp:
     
     def start_search_filings(self):
         """Starts the filing search in a separate thread and displays a loading message."""
-        # Clear previous results.
         for widget in self.results_frame.winfo_children():
             widget.destroy()
-        # Display a loading message.
         self.loading_label = tk.Label(self.results_frame, text="Loading...", fg="green")
         self.loading_label.pack(padx=10, pady=10)
-        # Run the search in a new thread.
         threading.Thread(target=self.search_filings, daemon=True).start()
     
     def search_filings(self):
@@ -192,18 +223,15 @@ class FilingSearchApp:
         for filing_type in selected_types:
             filings = get_filings(cik, filing_type)
             results[filing_type] = filings
-        # Schedule the display of results on the main thread.
         self.root.after(0, self.display_results, results)
     
     def update_results(self, message, error=False):
-        """Clears previous results and displays a message."""
         for widget in self.results_frame.winfo_children():
             widget.destroy()
         label_color = "red" if error else "black"
         tk.Label(self.results_frame, text=message, fg=label_color).pack(padx=10, pady=10)
     
     def display_results(self, results):
-        """Displays the filings results in the results frame."""
         for widget in self.results_frame.winfo_children():
             widget.destroy()
         for filing_type, filings in results.items():
@@ -229,5 +257,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-    #test
-    #test2
