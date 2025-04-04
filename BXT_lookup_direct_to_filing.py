@@ -14,7 +14,7 @@ NYL_INVESTMENTS_ETF_CIK = "0001415995"           # New York Life Investments ETF
 NYL_INVESTMENTS_ACTIVE_ETF_CIK = "0001426439"      # New York Life Investments Active ETF Trust
 
 # Updated User-Agent string.
-SEC_HEADERS = {"User-Agent": "Matthew Curtin (mvcurtin@examplegmail.com)"}
+SEC_HEADERS = {"User-Agent": "Matthew Curtin (mvcurtin@gmail.com)"}
 
 # Rate limiting: no more than ~5 requests per second.
 _rate_limit_lock = threading.Lock()
@@ -53,6 +53,9 @@ def get_native_filing_url(cik, accession_stripped, accession_original):
     Returns the URL for the remaining file (if any) as the native filing.
     If none is found, it falls back to the index page URL.
     """
+    print(f"cik = {cik}")       # Mike 4/3/25
+    print(f"accession_stripped = {accession_stripped}")       # Mike 4/3/25
+    print(f"accession_original = {accession_original}")       # Mike 4/3/25
     base_url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{accession_stripped}/"
     index_url = base_url + "index.html"
     try:
@@ -69,17 +72,23 @@ def get_native_filing_url(cik, accession_stripped, accession_original):
     for link in links:
         href = link["href"].strip()
         lower_href = href.lower()
-        # Only consider files in the base directory (ignore subdirectories).
-        if "/" in href:
-            continue
-        # Ignore files ending with "headers.html", "index.html", or any ".txt" file.
-        if lower_href.endswith("headers.html") or lower_href.endswith("index.html") or lower_href.endswith(".txt"):
-            continue
-        candidate_files.append(href)
+        # Mike 4/3/25: Replaced below code with 'if accession_stripped in lower_href and ...' code
+        # # Only consider files in the base directory (ignore subdirectories).
+        # if "/" in href:
+        #     continue
+        # # Ignore files ending with "headers.html", "index.html", or any ".txt" file.
+        # if lower_href.endswith("headers.html") or lower_href.endswith("index.html") or lower_href.endswith(".txt"):
+        #     continue
+        # candidate_files.append(href)
+        if accession_stripped in lower_href and accession_original not in lower_href:
+            candidate_files.append(href)
     
     if candidate_files:
+        print(f"candidate_files = {candidate_files}")           # Mike 4/3/25
         # Select the remaining candidate file.
-        return base_url + candidate_files[0]
+        print(f"candidate_files[0] = {candidate_files[0]}")     # Mike 4/3/25
+        # return base_url + candidate_files[0]                  # Mike 4/3/25: replaced w/ below line
+        return 'https://www.sec.gov' + candidate_files[0]
     return index_url
 
 def get_filings(cik, filing_type):
